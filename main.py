@@ -144,10 +144,10 @@ class SpeedChart(fch.LineChart):
 			try:
 				self.update()
 			except Exception:
-				logging.exception("SpeedChart.update failed during UI update")
+				wa_logger.exception("SpeedChart.update failed during UI update")
 		except Exception:
 			# keep UI robust in the face of chart exceptions
-			logging.exception("Failed to update SpeedChart")
+			wa_logger.exception("Failed to update SpeedChart")
 
 	def push_value(self, new_value: float, ts: Optional[float] = None) -> None:
 		"""Append a timestamped sample and update the chart.
@@ -160,7 +160,7 @@ class SpeedChart(fch.LineChart):
 			self.samples.append({'t': ts, 'v': float(new_value)})
 			self.update_data()
 		except Exception:
-			logging.exception("Failed to push value to SpeedChart")
+			wa_logger.exception("Failed to push value to SpeedChart")
 
 
 # OSC server background task handle (set in main)
@@ -211,7 +211,7 @@ async def _exit_app(icon, query):
 		try:
 			icon.stop()
 		except Exception:
-			logging.exception("Failed to stop tray icon from _exit_app")
+			wa_logger.exception("Failed to stop tray icon from _exit_app")
 
 	# Unregister callbacks if registered
 	try:
@@ -220,19 +220,19 @@ async def _exit_app(icon, query):
 			try:
 				osc_server.unregister_status_callback(osc_status_callback_fn)
 			except Exception:
-				logging.exception("Failed to unregister status callback")
+				wa_logger.exception("Failed to unregister status callback")
 			osc_status_callback_fn = None
 		if osc_message_callback_fn is not None:
 			try:
 				osc_server.unregister_message_callback(osc_message_callback_fn)
 			except Exception:
-				logging.exception("Failed to unregister message callback")
+				wa_logger.exception("Failed to unregister message callback")
 			osc_message_callback_fn = None
 		if osc_ip_callback_fn is not None:
 			try:
 				osc_server.unregister_ip_callback(osc_ip_callback_fn)
 			except Exception:
-				logging.exception("Failed to unregister message callback")
+				wa_logger.exception("Failed to unregister message callback")
 			osc_ip_callback_fn = None
 	except Exception:
 		pass
@@ -243,9 +243,9 @@ async def _exit_app(icon, query):
 			osc_task.cancel()
 			await osc_task
 		except asyncio.CancelledError:
-			logging.debug("OSC server task cancelled successfully")
+			wa_logger.debug("OSC server task cancelled successfully")
 		except Exception:
-			logging.exception("Error while cancelling OSC server task")
+			wa_logger.exception("Error while cancelling OSC server task")
 
 	# Cancel chart updater if running
 	if chart_update_task is not None and not chart_update_task.done():
@@ -262,8 +262,8 @@ async def _exit_app(icon, query):
 		# not be driven to completion synchronously here.
 		asyncio.create_task(p.window.close())
 	except Exception:
-		logging.exception("Failed to schedule window close from _exit_app")
-	logging.debug("The App was closed/exited successfully!")
+		wa_logger.exception("Failed to schedule window close from _exit_app")
+	wa_logger.debug("The App was closed/exited successfully!")
 
 
 def exit_app(icon, query):
@@ -355,9 +355,9 @@ async def main(page: ft.Page):
 		import osc_server
 		# Don't auto-start here — provide explicit Start/Stop controls.
 		osc_task = None
-		logging.info("OSC server available to start from UI")
+		wa_logger.info("OSC server available to start from UI")
 	except Exception:
-		logging.exception("Failed to import osc_server module")
+		wa_logger.exception("Failed to import osc_server module")
 
 	# Set up OSC bind controls
 	# Load stored preferences (if any)
@@ -377,11 +377,16 @@ async def main(page: ft.Page):
 		stored_smoothing = await ft.SharedPreferences().get('osc_smoothing')
 	except Exception:
 		stored_smoothing = None
+	# keybinds enabled preference
 	try:
-		stored_walk_threshold = await ft.SharedPreferences().get('osc_walk_threshold') if not None or "None" else 300
+		stored_keybinds = await ft.SharedPreferences().get('osc_keybinds_enabled')
 	except Exception:
-		stored_walk_threshold = 300
-	walk_threshold_value = str(stored_walk_threshold if stored_walk_threshold is not None else 300)
+		stored_keybinds = None
+	try:
+		stored_walk_threshold = await ft.SharedPreferences().get('osc_walk_threshold') if not None or "None" else 150
+	except Exception:
+		stored_walk_threshold = 150
+	walk_threshold_value = str(stored_walk_threshold if stored_walk_threshold is not None else 150)
 
 	try:
 		stored_walk_key = await ft.SharedPreferences().get('osc_walk_key') if not None or "None" else "w"
@@ -390,16 +395,16 @@ async def main(page: ft.Page):
 	walk_key_value = str(stored_walk_key if stored_walk_key is not None else "w")
 
 	try:
-		stored_run_threshold = await ft.SharedPreferences().get('osc_run_threshold') if not None or "None" else 700
+		stored_run_threshold = await ft.SharedPreferences().get('osc_run_threshold') if not None or "None" else 400
 	except Exception:
-		stored_run_threshold = 700
-	run_threshold_value = str(stored_run_threshold if stored_run_threshold is not None else 700)
+		stored_run_threshold = 400
+	run_threshold_value = str(stored_run_threshold if stored_run_threshold is not None else 400)
 
 	try:
-		stored_run_key = await ft.SharedPreferences().get('osc_run_key') if not None or "None" else "shift+w"
+		stored_run_key = await ft.SharedPreferences().get('osc_run_key') if not None or "None" else "shift"
 	except Exception:
-		stored_run_key = "shift+w"
-	run_key_value = str(stored_run_key if stored_run_key is not None else "shift+w")
+		stored_run_key = "shift"
+	run_key_value = str(stored_run_key if stored_run_key is not None else "shift")
 
 	addr_value = stored_addr if stored_addr not in (None, "") else ""
 	port_value = str(stored_port) if stored_port is not None else "9000"
@@ -428,7 +433,7 @@ async def main(page: ft.Page):
 			try:
 				await ft.SharedPreferences().set('osc_auto_start', str(val))
 			except Exception:
-				logging.exception("Failed to persist auto-start preference")
+				wa_logger.exception("Failed to persist auto-start preference")
 			# start or stop based on a new value
 			try:
 				if val:
@@ -436,7 +441,7 @@ async def main(page: ft.Page):
 				else:
 					await stop_osc()
 			except Exception:
-				logging.exception("Failed to apply auto-start preference change")
+				wa_logger.exception("Failed to apply auto-start preference change")
 
 		# schedule task
 		asyncio.create_task(_save_and_apply())
@@ -470,13 +475,13 @@ async def main(page: ft.Page):
 				osc_restart_icon_button.visible = False
 			p.update()
 		except Exception:
-			logging.exception("Failed to save bind settings to SharedPreferences")
+			wa_logger.exception("Failed to save bind settings to SharedPreferences")
 		# apply to osc_server if imported
 		try:
 			import osc_server
 			osc_server.set_bind_address(addr if addr != "" else None, port, endpoint)
 		except Exception:
-			logging.exception("Failed to apply bind settings to osc_server")
+			wa_logger.exception("Failed to apply bind settings to osc_server")
 
 	def on_save_bind(e):
 		asyncio.create_task(save_bind_settings())
@@ -502,6 +507,20 @@ async def main(page: ft.Page):
 
 	run_threshold_field = ft.TextField(label="Run Threshold", value=run_threshold_value)
 	run_key_field = ft.TextField(label="Run Key", value=run_key_value)
+
+	# Keybinds enabled toggle (persisted)
+	keybinds_enabled = True if (stored_keybinds in (None, "True", True)) else False
+	def on_keybinds_toggle(e):
+		nonlocal keybinds_enabled
+		keybinds_enabled = bool(e.control.value)
+		async def _save():
+			try:
+				await ft.SharedPreferences().set('osc_keybinds_enabled', str(keybinds_enabled))
+			except Exception:
+				wa_logger.exception("Failed to persist keybinds_enabled preference")
+		asyncio.create_task(_save())
+	keybinds_checkbox = ft.Checkbox(label="Enable keybinds", value=keybinds_enabled)
+	keybinds_checkbox.on_change = on_keybinds_toggle
 
 	auto_start_checkbox = ft.Checkbox(label="Start OSC on launch", value=auto_start_value)
 	auto_start_checkbox.on_change = on_auto_toggle
@@ -543,7 +562,7 @@ async def main(page: ft.Page):
 					pass
 				p.update()
 		except Exception:
-			logging.exception("Error in status callback")
+			wa_logger.exception("Error in status callback")
 
 	def current_ip_cb(ip_str: str):
 		try:
@@ -551,7 +570,7 @@ async def main(page: ft.Page):
 				osc_current_ip_control.value = f"{ip_str}"
 				p.update()
 		except Exception:
-			logging.exception("Error in current IP callback")
+			wa_logger.exception("Error in current IP callback")
 
 	async def start_osc():
 		"""Start the OSC server in the background and update the UI."""
@@ -599,9 +618,9 @@ async def main(page: ft.Page):
 						osc_log_list.controls = osc_log_list.controls[:OSC_LOG_MAX]
 					p.update()
 			except Exception:
-				logging.exception("Failed to append OSC message to log list")
+				wa_logger.exception("Failed to append OSC message to log list")
 		except Exception:
-			logging.exception("Error in message callback")
+			wa_logger.exception("Error in message callback")
 
 	# register callbacks
 	try:
@@ -621,88 +640,211 @@ async def main(page: ft.Page):
 		try:
 			osc_server.set_smoothing(float(smoothing_value))
 		except Exception:
-			logging.exception("Failed to set smoothing factor")
+			wa_logger.exception("Failed to set smoothing factor")
 		# start automatically if preference set
 		try:
 			if auto_start_value:
 				asyncio.create_task(start_osc())
 		except Exception:
-			logging.exception("Failed to auto-start OSC server")
-		# Decay behaviour: start decaying toward 0 after no new messages for this many seconds
+			wa_logger.exception("Failed to auto-start OSC server")
+
+		# Decay behaviour and chart updater configuration
 		DECAY_START = 0.8
-		# Exponential decay rate (per second) applied to latest_smoothed once decay starts
 		DECAY_RATE = 3
-		# Apply decay every DECAY_TICK seconds for smooth interpolation
 		DECAY_TICK = 0.025
+
+		# Track whether we have pressed the walk/run keys so we can release them later
+		walk_is_down = False
+		run_is_down = False
+		# Toggle to enable/disable keybind automation from the UI (default True)
+
+		# Attempt to import optional keyboard support; if unavailable, key actions are skipped
+		import re
+		try:
+			import keyboard as _keyboard
+		except Exception:
+			_keyboard = None
+			logging.warning("`keyboard` module not available; keypress automation disabled")
+
 		# start the periodic chart updater
 		try:
 			async def chart_updater():
-				# Throttled chart updater: ensure we update the UI no more often than
-				# once every CHART_UPDATE_INTERVAL seconds. Decay is applied on a separate
-				# fixed tick (DECAY_TICK) so it interpolates smoothly regardless of push rate.
 				global latest_smoothed, last_msg_time
+				nonlocal walk_is_down, run_is_down, keybinds_enabled
 				interval = CHART_UPDATE_INTERVAL
 				last_push_time = 0.0
 				last_tick = time.monotonic()
 				last_decay_time = last_tick
+				# track when value first went below walk threshold while walk key is down
+				walk_below_since = None
+				# track when value first went below run threshold while run key is down
+				run_below_since = None
 				try:
+					while True:
 						start_tick = time.monotonic()
-						# compute elapsed time since the last iteration
 						now_tick = start_tick
-						dt = now_tick - last_tick if last_tick is not None else interval
+						dt = now_tick - last_tick
 						last_tick = now_tick
-						# Apply decay on fixed ticks: if enough time has passed since last decay
+						# Apply decay on fixed ticks once decay window has passed
 						now_ts = time.time()
-						if (now_ts - last_push_time) >= DECAY_START:
-							# accumulate decay in DECAY_TICK steps
+						if (now_ts - last_msg_time) >= DECAY_START:
 							decay_elapsed = now_tick - last_decay_time
 							if decay_elapsed >= DECAY_TICK:
-								# apply decay in fixed DECAY_TICK increments to simulate regular ticks
 								num_steps = int(decay_elapsed // DECAY_TICK)
 								for _ in range(num_steps):
 									decay_factor = math.exp(-DECAY_RATE * DECAY_TICK)
-									latest_smoothed = latest_smoothed * decay_factor
+									latest_smoothed *= decay_factor
 									last_decay_time += DECAY_TICK
-								# clamp tiny values to zero to avoid noise
+								# clamp tiny values to zero
 								if abs(latest_smoothed) < 0.1:
 									latest_smoothed = 0.0
-								# ensure last_decay_time doesn't drift beyond now_tick
 								if last_decay_time > now_tick:
 									last_decay_time = now_tick
-						# snapshot value to operate on for this tick
 						val = latest_smoothed
-						# update readout immediately to reflect decay even when no push occurs
-						try:
-							if value_readout_text_control is not None:
+						# update readout immediately so UI shows decayed value
+						if value_readout_text_control is not None:
+							try:
 								value_readout_text_control.value = f"{round(val)}"
-								# update the page so the readout reflects the new value
 								p.update()
+							except Exception:
+								wa_logger.exception("Failed to update readout in chart_updater")
+
+						# Keybind handling: press/release walk key when smoothed value crosses the threshold
+						try:
+							try:
+								thr_str = walk_threshold_field.value if walk_threshold_field is not None else None
+								walk_thr = float(thr_str) if thr_str is not None and thr_str != "" else 150.0
+							except Exception:
+								walk_thr = 15.0
+							key_str = walk_key_field.value if walk_key_field is not None else ""
+							key_str = (key_str or "").strip()
+							if _keyboard is not None and key_str != "":
+								keys = [k for k in re.split(r'[\+\s-]+', key_str) if k]
+								if val >= walk_thr:
+									# entered walking region: reset the below-threshold timer
+									walk_below_since = None
+									if not walk_is_down and keybinds_enabled:
+										try:
+											for k in keys:
+												_keyboard.press(k)
+												wa_logger.debug(f"Pressing {k}")
+											walk_is_down = True
+										except Exception:
+											wa_logger.exception("Failed to press walk key(s)")
+								else:
+									# value is below walk threshold: only release after continuous 0.5s
+									if walk_is_down:
+										if walk_below_since is None:
+											walk_below_since = time.monotonic()
+										elif (time.monotonic() - walk_below_since) >= 0.2:
+											try:
+												for k in reversed(keys):
+													wa_logger.debug(f"Releasing {k}")
+													_keyboard.release(k)
+												walk_is_down = False
+											except Exception:
+												wa_logger.exception("Failed to release walk key(s)")
 						except Exception:
-							logging.exception("Failed to update readout in chart_updater")
-						# only push/update the chart if we've waited at least `interval` since the last push
+							wa_logger.exception("Error handling walk key press/release")
+
+						# Run key handling: press/release run key based on smoothed value and threshold
+						try:
+							try:
+								thr_str = run_threshold_field.value if run_threshold_field is not None else None
+								run_thr = float(thr_str) if thr_str is not None and thr_str != "" else 400.0
+							except Exception:
+								run_thr = 400.0
+							key_str = run_key_field.value if run_key_field is not None else ""
+							key_str = (key_str or "").strip()
+							if _keyboard is not None and key_str != "":
+								if val >= run_thr:
+									if not run_is_down and keybinds_enabled:
+										try:
+											for k in re.split(r'[\s+-]+', key_str):
+												_keyboard.press(k)
+												wa_logger.debug(f"Pressing {k}")
+											run_is_down = True
+										except Exception:
+											wa_logger.exception("Failed to press run key(s)")
+									# entered run region: reset the below-threshold timer
+									run_below_since = None
+								else:
+									# value is below run threshold: only release after continuous 0.5s
+									if run_is_down:
+										if run_below_since is None:
+											run_below_since = time.monotonic()
+										elif (time.monotonic() - run_below_since) >= 0.5:
+											try:
+												for k in reversed(re.split(r'[\s+-]+', key_str)):
+													_keyboard.release(k)
+													wa_logger.debug(f"Releasing {k}")
+												run_is_down = False
+											except Exception:
+												wa_logger.exception("Failed to release run key(s)")
+							else:
+								if run_is_down:
+									try:
+										for k in reversed(re.split(r'[\s+-]+', key_str)):
+											_keyboard.release(k)
+									except Exception:
+										wa_logger.exception("Failed to release run key(s) when disabling keybinds")
+									finally:
+										run_is_down = False
+						except Exception:
+							wa_logger.exception("Error handling run key press/release")
+
+						# push chart update at fixed interval
 						now = time.monotonic()
 						if (now - last_push_time) >= interval:
 							try:
 								rounded = round(val)
 								if osc_chart is not None:
 									osc_chart.push_value(rounded)
-								# apply the UI update once per push tick
 								p.update()
 							except Exception:
-								logging.exception("Error in chart updater tick")
+								wa_logger.exception("Error in chart updater tick")
 							last_push_time = time.monotonic()
 
+						# sleep to maintain interval
 						elapsed = time.monotonic() - start_tick
 						sleep_for = max(0.0, interval - elapsed)
 						await asyncio.sleep(sleep_for)
 				except asyncio.CancelledError:
+					# ensure any held key is released on cancellation
+					if _keyboard is not None and walk_is_down:
+						try:
+							key_str = walk_key_field.value if walk_key_field is not None else ""
+							keys = [k for k in re.split(r'[\+\s-]+', (key_str or "").strip()) if k]
+							for k in reversed(keys):
+								try:
+									_keyboard.release(k)
+								except Exception:
+									wa_logger.exception("Failed to release walk key(s) on cancellation")
+						except Exception:
+							wa_logger.exception("Failed to release walk key(s) on cancellation")
+						finally:
+							walk_is_down = False
+					# also ensure run keys released
+					if _keyboard is not None and run_is_down:
+						try:
+							run_key_str = run_key_field.value if run_key_field is not None else ""
+							run_keys = [k for k in re.split(r'[\s+-]+', (run_key_str or "").strip()) if k]
+							for k in reversed(run_keys):
+								try:
+									_keyboard.release(k)
+								except Exception:
+									wa_logger.exception("Failed to release run key(s) on cancellation")
+						except Exception:
+							wa_logger.exception("Failed to release run key(s) on cancellation")
+						finally:
+							run_is_down = False
 					return
 
 			chart_update_task = asyncio.create_task(chart_updater())
 		except Exception:
-			logging.exception("Failed to start chart updater")
+			wa_logger.exception("Failed to start chart updater")
 	except Exception:
-		logging.exception("Failed to register event callbacks with osc_server")
+		wa_logger.exception("Failed to register event callbacks with osc_server")
 
 	async def stop_osc():
 		"""Stop the background OSC server and update the UI."""
@@ -816,7 +958,7 @@ async def main(page: ft.Page):
 	top_appbar = ft.AppBar(title=ft.Text(page_header.upper(), theme_style=ft.TextThemeStyle.HEADLINE_SMALL, weight=ft.FontWeight.W_800, ), actions=[settings_button])
 
 
-	bottom_appbar = ft.BottomAppBar(content=ft.Row(controls=[ft.Row(controls=[osc_status_icon, osc_current_ip_control, osc_restart_icon_button])], tight=True), height=32, padding=Padding.only(left=16), bgcolor=ft.Colors.with_opacity(0, ft.Colors.BLUE))
+	bottom_appbar = ft.BottomAppBar(content=ft.Row(controls=[ft.Row(controls=[osc_status_icon, osc_current_ip_control, osc_restart_icon_button]), keybinds_checkbox], tight=True), height=32, padding=Padding.only(left=16), bgcolor=ft.Colors.with_opacity(0, ft.Colors.BLUE))
 	page.bottom_appbar = bottom_appbar
 	page.appbar = top_appbar
 	switch_page(main_container, "Main")
