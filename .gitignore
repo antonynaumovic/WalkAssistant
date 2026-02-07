@@ -181,3 +181,7 @@ cython_debug/
 .cursorindexingignore
 
 .github/
+
+.junie/
+
+*.bat

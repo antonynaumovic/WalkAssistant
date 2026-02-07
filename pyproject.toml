@@ -1,17 +1,22 @@
 [project]
 name = "walkassistant"
 version = "0.1.0"
-description = "Add your description here"
+description = "Walk assistant app to turn OSC messages into a visual representation of the user's walking activity."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "aenum>=3.1.16",
+    "black>=26.1.0",
     "flet-charts>=0.80.5",
     "flet[all]>=0.80.5",
     "infi-systray>=0.1.12.1",
     "keyboard>=0.13.5",
-    "numpy>=2.2.6",
-    "pynput>=1.8.1",
     "pystray==0.19.5",
-    "pystrayfix==0.19.6",
     "python-osc>=1.9.3",
 ]
+[tool.flet]
+project = "walk-assistant"
+company = "WalkAssistant"
+compile.app = true
+compile.packages = true
+compile.cleanup = true
