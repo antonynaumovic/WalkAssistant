@@ -15,36 +15,41 @@ class WalkAssistantConfig:
         "run_threshold": 400,
         "walk_key": "w",
         "run_key": "shift",
+        "logging_level": "info",
+        "debug": False,
         "endpoint_groups": [
             {
                 "id": 0,
                 "alias": "Default",
-                "value_type": str(WalkAssistantValueTypes.VECTOR3),
+                "value_type": WalkAssistantValueTypes.VECTOR3.value,
                 "endpoints": [
                     {
+                        "id": 0,
                         "alias": "primary",
                         "resource": "/accelerometer",
-                        "value_type": str(WalkAssistantValueTypes.VECTOR3),
-                        "id": 0,
+                        "value_type": WalkAssistantValueTypes.VECTOR3.value,
+                        "bind": "xyz",
                     },
                 ],
             },
             {
                 "id": 1,
-                "alias": "Default",
-                "value_type": str(WalkAssistantValueTypes.VECTOR3),
+                "alias": "Test Group",
+                "value_type": WalkAssistantValueTypes.VECTOR3.value,
                 "endpoints": [
                     {
+                        "id": 1,
                         "alias": "test",
                         "resource": "/test",
-                        "value_type": str(WalkAssistantValueTypes.VECTOR3),
-                        "id": 1,
+                        "value_type": WalkAssistantValueTypes.FLOAT.value,
+                        "bind": "x",
                     },
                     {
+                        "id": 2,
                         "alias": "test2",
                         "resource": "/test2",
-                        "value_type": str(WalkAssistantValueTypes.FLOAT),
-                        "id": 2,
+                        "value_type": WalkAssistantValueTypes.FLOAT.value,
+                        "bind": "y",
                     },
                 ],
             },
@@ -65,47 +70,65 @@ class WalkAssistantConfig:
         else:
             self.__config_logger.info(f"Loading config file: {config_file_path}")
             loaded_config = yaml.safe_load(open(config_file_path))
+            self.__config_logger.debug(f"loaded config: {loaded_config}")
+
             try:
-                if "endpoint_groups" in loaded_config and len(loaded_config.keys()) > 8:
+                if (
+                    "endpoint_groups" in loaded_config.keys()
+                    and len(loaded_config.keys()) > 8
+                ):
+                    self.__config_logger.info("Config file loaded successfully")
                     self.__config = loaded_config
             except Exception:
                 self.__config_logger.error(
                     "Config file is invalid, using default config"
                 )
 
-    @staticmethod
-    def config(name):
-        WalkAssistantConfig.__config_logger.debug(
-            f"Retrieving config value for '{name}'"
-        )
-        return WalkAssistantConfig.__config[name]
+    def config(self, name):
+        self.__config_logger.debug(f"Retrieving config value for '{name}'")
+        return self.__config[name]
 
-    @staticmethod
-    def set(name: str | list[str], value):
+    def set(self, name: str | list[str], value):
         names = name if isinstance(name, list) else [name]
         values = value if isinstance(value, list) else [value]
         if len(names) != len(values):
-            WalkAssistantConfig.__config_logger.error(
+            self.__config_logger.error(
                 f"Number of names ({len(names)}) does not match number of values ({len(values)})"
             )
             raise ValueError(
                 f"Number of names ({len(names)}) does not match number of values ({len(values)})"
             )
         for i, n in enumerate(names):
-            if n in WalkAssistantConfig.__config.keys():
-                WalkAssistantConfig.__config_logger.debug(
+            if n in self.__config.keys():
+                self.__config_logger.debug(
                     f"Setting config value for '{n}' to '{values[i]}'"
                 )
-                WalkAssistantConfig.__config[n] = values[i]
+                self.__config[n] = values[i]
             else:
-                WalkAssistantConfig.__config_logger.error(
-                    f"Key '{n}' not found in config"
-                )
+                self.__config_logger.error(f"Key '{n}' not found in config")
                 raise KeyError(f"Key {n} not found in config")
-        if WalkAssistantConfig.__config_path:
+        if self.__config_path:
             yaml.safe_dump(
-                WalkAssistantConfig.__config,
-                open(WalkAssistantConfig.__config_path, "w"),
+                self.__config,
+                open(self.__config_path, "w"),
+                sort_keys=False,
+            )
+        return True
+
+    def set_array(self, name: str, value: list):
+        if name in self.__config.keys():
+            self.__config_logger.debug(
+                f"Setting config value for '{name}' to '{value}'"
+            )
+            self.__config[name] = value
+        else:
+            self.__config_logger.error(f"Key '{name}' not found in config")
+            raise KeyError(f"Key {name} not found in config")
+        if self.__config_path:
+            yaml.safe_dump(
+                self.__config,
+                open(self.__config_path, "w"),
+                sort_keys=False,
             )
         return True
 
@@ -123,5 +146,6 @@ class WalkAssistantConfig:
             yaml.safe_dump(
                 WalkAssistantConfig.__config,
                 open(WalkAssistantConfig.__config_path, "w"),
+                sort_keys=False,
             )
         return True
