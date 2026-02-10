@@ -23,10 +23,10 @@ server_protocol: Optional[object] = None
 # Bind configuration (defaults)
 _bind_address: Optional[str] = None
 _bind_port: int = 9000
-_bind_endpoint: str = "/accelerometer"
 _bind_groups: list[dict] = []
 _bind_smoothing: float = 0.8
 _bind_outputs: list[dict] = []
+_bind_multiplier: float = 1.0
 _endpoint_handlers: dict[str, Callable[..., Any]] = {}
 _debug_mode: bool = False
 
@@ -44,8 +44,6 @@ _message_callbacks = []  # callbacks(message_tuple)
 
 logger = logging.getLogger("OSC Server")
 # Do not set logger.setLevel() here; logging level is inherited from main.py
-handler_logger = logging.getLogger("OSC Handlers")
-# Do not set handler_logger.setLevel() here; logging level is inherited from main.py
 
 # Per-output aggregation state
 _output_pending_values = {}
@@ -63,14 +61,14 @@ def _wrap_handler_with_rate_limit(handler: Callable[..., Any]) -> Callable[..., 
                 # Rate limited: drop the message silently but count for debug
                 _rate_dropped += 1
                 handler_name = getattr(handler, "__name__", str(handler))
-                handler_logger.debug(
+                logger.debug(
                     "Dropping message for %s (rate limit). Total dropped=%d",
                     handler_name,
                     _rate_dropped,
                 )
                 return
         except Exception:
-            handler_logger.exception("Error in rate limiter")
+            logger.exception("Error in rate limiter")
             # If the rate limiter fails, still call the handler to avoid message loss
         return handler(addr, *message)
 
@@ -83,9 +81,9 @@ def _wrap_handler_with_rate_limit(handler: Callable[..., Any]) -> Callable[..., 
 
 
 def create_handlers(bind_groups: list[dict]):
-    handler_logger.debug("create_handlers called with bind_groups: %s", bind_groups)
+    logger.debug("create_handlers called with bind_groups: %s", bind_groups)
     global _bind_groups, _bind_outputs, _endpoint_handlers, _output_pending_values, _endpoint_queues, _endpoint_tasks
-    handler_logger.debug(f"Bind groups: {bind_groups}")
+    logger.debug(f"Bind groups: {bind_groups}")
 
     _bind_groups = bind_groups or []
     _bind_outputs = []
@@ -103,9 +101,7 @@ def create_handlers(bind_groups: list[dict]):
             "value_type": group_value_type,
             "endpoints": [],
         }
-        handler_logger.debug(
-            "Creating output %s with type %s", group_label, group_value_type
-        )
+        logger.debug("Creating output %s with type %s", group_label, group_value_type)
 
         # Prepare the aggregation state for this output
         output_key = group_label or f"output_{index}"
@@ -120,7 +116,7 @@ def create_handlers(bind_groups: list[dict]):
             )
             address = endpoint_spec.get("resource")
             if not address:
-                handler_logger.warning(
+                logger.warning(
                     "Skipping endpoint without address in group %s", group_label
                 )
                 continue
@@ -131,7 +127,7 @@ def create_handlers(bind_groups: list[dict]):
             # Validate endpoint_bind is a subset of required_components
             for c in endpoint_bind:
                 if c not in required_components:
-                    handler_logger.warning(
+                    logger.warning(
                         f"Endpoint {address} bind '{endpoint_bind}' contains invalid component '{c}' for group type '{group_value_type}'"
                     )
             endpoint_binds[address] = endpoint_bind
@@ -151,13 +147,30 @@ def create_handlers(bind_groups: list[dict]):
                 req=required_components,
                 output_key=output_key,
                 queue=queue,
+                group_value_type=group_value_type,
             ):
                 while True:
                     msg = await queue.get()
                     # Map each value in the message to the corresponding bind character (any order)
                     for i, c in enumerate(bind):
                         if c in req and i < len(msg):
-                            _output_pending_values[output_key][c] = msg[i]
+                            val = msg[i]
+                            # Apply multiplier for numeric types
+                            if group_value_type.lower() in (
+                                "float",
+                                "int",
+                                "integer",
+                                "vector2",
+                                "vector3",
+                                "vector4",
+                            ):
+                                try:
+                                    val = float(val) * _bind_multiplier
+                                    if group_value_type.lower() in ("int", "integer"):
+                                        val = int(val)
+                                except Exception:
+                                    pass
+                            _output_pending_values[output_key][c] = val
                     # Check if all required components are present
                     if all(c in _output_pending_values[output_key] for c in req):
                         values = {c: _output_pending_values[output_key][c] for c in req}
@@ -193,7 +206,7 @@ def create_handlers(bind_groups: list[dict]):
                                     pass
                             q.put_nowait(message)
                         except Exception as e:
-                            handler_logger.warning(f"Queue put failed for {addr}: {e}")
+                            logger.warning(f"Queue put failed for {addr}: {e}")
 
                 return putter
 
@@ -208,7 +221,7 @@ def create_handlers(bind_groups: list[dict]):
                     "bind": endpoint_bind,
                 }
             )
-            handler_logger.debug(
+            logger.debug(
                 "Registered latest-only handler %s for %s",
                 getattr(wrapped, "__name__", str(wrapped)),
                 address,
@@ -240,12 +253,10 @@ def get_ip_address():
 
 
 def debug_handler(addr, *message):
-    handler_logger.debug(
-        "debug_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("debug_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     output = "{:32}".format(addr)
-    handler_logger.debug("Debug handler received message on %s: %s", addr, message)
+    logger.debug("Debug handler received message on %s: %s", addr, message)
     if addr.startswith("/bt"):
         for i in range(len(message)):
             output += message[i].hex()
@@ -256,16 +267,14 @@ def debug_handler(addr, *message):
 
 
 def float_handler(addr, *message):
-    handler_logger.debug(
-        "float_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("float_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
             {
                 "time": now,
                 "endpoint": addr,
-                "value": float(message[0]),
+                "value": float(message[0]) * _bind_multiplier,
             }
         )
     except Exception:
@@ -273,14 +282,14 @@ def float_handler(addr, *message):
 
 
 def int_handler(addr, *message):
-    handler_logger.debug("int_handler called with addr: %s, message: %s", addr, message)
+    logger.debug("int_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
             {
                 "time": now,
                 "endpoint": addr,
-                "value": int(message[0]),
+                "value": int(message[0] * _bind_multiplier),
             }
         )
     except Exception:
@@ -288,9 +297,7 @@ def int_handler(addr, *message):
 
 
 def string_handler(addr, *message):
-    handler_logger.debug(
-        "string_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("string_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
@@ -305,9 +312,7 @@ def string_handler(addr, *message):
 
 
 def boolean_handler(addr, *message):
-    handler_logger.debug(
-        "boolean_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("boolean_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
@@ -322,17 +327,15 @@ def boolean_handler(addr, *message):
 
 
 def vector2_handler(addr, *message):
-    handler_logger.debug(
-        "vector2_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("vector2_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
             {
                 "time": now,
                 "endpoint": addr,
-                "x": float(message[0]),
-                "y": float(message[1]),
+                "x": float(message[0]) * _bind_multiplier,
+                "y": float(message[1]) * _bind_multiplier,
             }
         )
     except Exception:
@@ -340,18 +343,16 @@ def vector2_handler(addr, *message):
 
 
 def vector3_handler(addr, *message):
-    handler_logger.debug(
-        "vector3_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("vector3_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
             {
                 "time": now,
                 "endpoint": addr,
-                "x": float(message[0]),
-                "y": float(message[1]),
-                "z": float(message[2]),
+                "x": float(message[0]) * _bind_multiplier,
+                "y": float(message[1]) * _bind_multiplier,
+                "z": float(message[2]) * _bind_multiplier,
             }
         )
     except Exception:
@@ -359,19 +360,17 @@ def vector3_handler(addr, *message):
 
 
 def vector4_handler(addr, *message):
-    handler_logger.debug(
-        "vector4_handler called with addr: %s, message: %s", addr, message
-    )
+    logger.debug("vector4_handler called with addr: %s, message: %s", addr, message)
     now = time.time()
     try:
         _notify_message(
             {
                 "time": now,
                 "endpoint": addr,
-                "x": float(message[0]),
-                "y": float(message[1]),
-                "z": float(message[2]),
-                "w": float(message[3]),
+                "x": float(message[0]) * _bind_multiplier,
+                "y": float(message[1]) * _bind_multiplier,
+                "z": float(message[2]) * _bind_multiplier,
+                "w": float(message[3]) * _bind_multiplier,
             }
         )
     except Exception:
@@ -429,38 +428,35 @@ def set_debug_mode(enabled: bool):
 
 def set_debug_level(level: int):
     logger.debug("set_debug_level called with level: %s", level)
-    handler_logger.setLevel(level)
+    logger.setLevel(level)
     logger.setLevel(level)
 
 
-def set_bind_address(
-    addr: Optional[str], port: int = 9000, endpoint: str = "/accelerometer"
-):
-    logger.debug(
-        "set_bind_address called with addr: %s, port: %s, endpoint: %s",
-        addr,
-        port,
-        endpoint,
-    )
+def set_bind_address(addr: Optional[str], port: int = 9000):
     """Set the OSC server bind address and port used when starting the server.
     addr may be None to indicate auto-detect (default behaviour) or an IP string like '127.0.0.1'.
     """
 
-    global _bind_address, _bind_port, _bind_endpoint
+    global _bind_address, _bind_port
     _bind_address = addr
     _bind_port = int(port)
-    _bind_endpoint = endpoint
 
 
 def get_bind_address():
     logger.debug("get_bind_address called")
-    return _bind_address, _bind_port, _bind_endpoint
+    return _bind_address, _bind_port
 
 
 def set_smoothing(smoothing: float = 0.8):
     logger.debug("set_smoothing called with smoothing: %s", smoothing)
     global _bind_smoothing
     _bind_smoothing = smoothing
+
+
+def set_bind_multiplier(multiplier: float = 1.0):
+    logger.debug("set_bind_multiplier called with multiplier: %s", multiplier)
+    global _bind_multiplier
+    _bind_multiplier = multiplier
 
 
 def get_smoothing():
@@ -616,17 +612,10 @@ async def start_async_osc_server(
     addr: Optional[str] = None,
     port: Optional[int] = None,
     smoothing: Optional[float] = None,
+    multiplier: Optional[float] = None,
     endpoint: Optional[str] = None,
     debug: Optional[bool] = None,
 ):
-    logger.debug(
-        "start_async_osc_server called with addr: %s, port: %s, smoothing: %s, endpoint: %s, debug: %s",
-        addr,
-        port,
-        smoothing,
-        endpoint,
-        debug,
-    )
     """Start the AsyncIO OSC UDP server on the caller's running event loop.
 
     This coroutine is designed to be started with asyncio.create_task() from the Flet app's
@@ -636,17 +625,17 @@ async def start_async_osc_server(
     when the task is cancelled.
     """
 
-    global server_transport, server_protocol, _bind_address, _bind_port, _bind_smoothing, _bind_endpoint, ip_str, _debug_mode
+    global server_transport, server_protocol, _bind_address, _bind_port, _bind_smoothing, _bind_multiplier, ip_str, _debug_mode
     if addr is None:
         addr = _bind_address if _bind_address is not None else get_ip_address()
     if port is None:
         port = _bind_port
-    if endpoint is None:
-        endpoint = _bind_endpoint
     if smoothing is None:
         smoothing = _bind_smoothing
     if debug is None:
         debug = _debug_mode
+    if multiplier is None:
+        multiplier = _bind_multiplier
     disp = dispatcher.Dispatcher()
     handlers = _endpoint_handlers or {endpoint: [debug_handler]}
     logger.debug(f"Debug mode: {debug}, handlers: {handlers}")
@@ -670,9 +659,7 @@ async def start_async_osc_server(
     transport, protocol = await server.create_serve_endpoint()
     server_transport = transport
     server_protocol = protocol
-    logger.info(
-        f"Async OSC server running on {addr}:{port}, endpoint {endpoint} with smoothing {smoothing}"
-    )
+    logger.info(f"Async OSC server running on {addr}:{port}")
     # notify listeners that the server is running
     _notify_status(True)
 

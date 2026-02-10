@@ -1,15 +1,17 @@
 import asyncio
-import datetime
 import logging
 import math
+import os
+import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import flet as ft
 import flet_charts as fch
-from aenum import Enum, EnumType
+import keyboard
+from aenum import EnumType
 from infi.systray import SysTrayIcon
 from flet import Padding
 
@@ -17,6 +19,8 @@ from config import WalkAssistantConfig
 from value_types import WalkAssistantValueTypes
 
 import itertools
+
+# /data/motion/accelerometer/x
 
 p: ft.Page
 
@@ -31,6 +35,49 @@ logging.basicConfig(
     style="{",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+keybinds_enabled = False
+keybinds_checkbox = None
+run_is_down = False
+walk_is_down = False
+osc_is_running = None
+input_smoothing_value = 0.8
+
+
+def resource_path(relative_path):
+    """Get the absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores the path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return str(os.path.join(base_path, relative_path))
+
+
+def apply_saved_server_config(
+    osc_server, addr_value, port_value, smoothing_value, debug_mode
+):
+    wa_logger.debug(
+        f"Applying saved server config: addr={addr_value}, port={port_value}, smoothing={smoothing_value}, debug_mode={debug_mode}"
+    )
+    try:
+        if addr_value not in (None, ""):
+            osc_server.set_bind_address(addr_value, int(port_value))
+    except Exception:
+        pass
+    try:
+        osc_server.set_smoothing(float(smoothing_value))
+    except Exception:
+        wa_logger.exception("Failed to set smoothing factor")
+
+    try:
+        osc_server.set_bind_multiplier(float(config.config("multiplier", 1.0)))
+    except Exception:
+        wa_logger.exception("Failed to set bind multiplier")
+    # start automatically if preference set
+
+    osc_server.set_debug_mode(debug_mode)
 
 
 def apply_endpoint_handlers_from_config(endpoint_groups: list[dict]) -> bool:
@@ -456,7 +503,7 @@ class WalkAssistantEndpoints:
         return self.__endpoints_tile
 
 
-max_chart_points = 30
+max_chart_points = 50
 
 # Chart window in seconds (display last N seconds)
 CHART_WINDOW_SECONDS = 10
@@ -491,7 +538,7 @@ class SpeedChart(fch.LineChart):
         # seed with a single zero sample so chart has an initial point
         now = time.time()
         self.samples.append({"t": now, "v": 0.0})
-
+        self.animation = ft.Animation(60, ft.AnimationCurve.LINEAR_TO_EASE_OUT)
         self.data_1 = [
             fch.LineChartData(
                 stroke_width=2,
@@ -525,7 +572,7 @@ class SpeedChart(fch.LineChart):
         self.horizontal_grid_lines = fch.ChartGridLines(
             color=ft.Colors.with_opacity(0.2, ft.Colors.ON_SURFACE), width=1
         )
-        self.left_axis = fch.ChartAxis(label_size=50, label_spacing=8000)
+        self.left_axis = fch.ChartAxis(label_size=50, label_spacing=16000)
         # self.bottom_axis = fch.ChartAxis(label_size=40, label_spacing=CHART_WINDOW_SECONDS/2)
 
         # hint axis ranges to help the chart scale (might be ignored by implementation)
@@ -719,7 +766,7 @@ async def _exit_app(tray):
         # Schedule the close on the running loop instead of awaiting directly. This avoids
         # 'coroutine was never awaited' warnings in edge cases where the coroutine might
         # not be driven to completion synchronously here.
-        asyncio.create_task(p.window.close())
+        asyncio.create_task(p.window.destroy())
     except Exception:
         wa_logger.exception("Failed to schedule window close from _exit_app")
     wa_logger.debug("The App was closed/exited successfully!")
@@ -779,37 +826,12 @@ def tray_clicked(tray):
 menu_options = (("Open App", None, tray_clicked),)
 
 tray_icon = SysTrayIcon(
-    "assets/favicon.ico", "Walk Assistant", menu_options, on_quit=exit_app
+    resource_path("favicon.ico"), "Walk Assistant", menu_options, on_quit=exit_app
 )
 
 
-async def init_config():
-    global storage_directory, config_file, config
-    storage_directory = (
-        await ft.StoragePaths().get_application_documents_directory()
-        + r"\walkassistant\\"
-    )
-    Path(storage_directory).mkdir(parents=True, exist_ok=True)
-    config_file_path = storage_directory + config_file
-    wa_logger.info(f"Using config file: {config_file_path}")
-    config = WalkAssistantConfig(config_file_path)
-    # Set the logging level from config
-    try:
-        level_str = config.config("logging_level")
-        level = getattr(logging, str(level_str).upper(), logging.INFO)
-        # logging.getLogger().setLevel(level)
-        wa_logger.setLevel(level)
-        wa_logger.info(
-            f"Logging level set to {logging.getLevelName(level)} from config"
-        )
-    except Exception as e:
-        wa_logger.setLevel(logging.INFO)
-        wa_logger.warning(f"Failed to set logging level from config: {e}")
-    return config
-
-
 async def main(page: ft.Page):
-    global p, main_loop, osc_task, osc_log_list, osc_status_control, osc_last_msg_control, osc_current_ip_control, osc_status_callback_fn, osc_message_callback_fn, osc_ip_callback_fn, current_screen, value_readout_text_control, osc_chart, chart_update_task, latest_smoothed, storage_directory, config
+    global p, main_loop, osc_task, osc_log_list, osc_status_control, osc_last_msg_control, osc_current_ip_control, osc_status_callback_fn, osc_message_callback_fn, osc_ip_callback_fn, current_screen, value_readout_text_control, osc_chart, chart_update_task, latest_smoothed, storage_directory, config, keybinds_checkbox, walk_is_down, run_is_down, osc_is_running
     p = page
     # capture the running asyncio loop so pystray callbacks (in another thread) can schedule work on it
     main_loop = asyncio.get_running_loop()
@@ -821,11 +843,46 @@ async def main(page: ft.Page):
         content=settings_screen, padding=ft.Padding.symmetric(vertical=4)
     )
 
+    def toggle_keybinds():
+        global keybinds_enabled, keybinds_checkbox
+        keybinds_enabled = not keybinds_enabled
+        keybinds_checkbox.value = keybinds_enabled
+        p.update()
+        wa_logger.info(f"Keybinds {'enabled' if keybinds_enabled else 'disabled'}")
+
+    async def init_config():
+        global storage_directory, config_file, config, keybinds_enabled, input_smoothing_value
+        storage_directory = (
+            await ft.StoragePaths().get_application_documents_directory()
+            + r"\walkassistant\\"
+        )
+        Path(storage_directory).mkdir(parents=True, exist_ok=True)
+        config_file_path = storage_directory + config_file
+        wa_logger.info(f"Using config file: {config_file_path}")
+        config = WalkAssistantConfig(config_file_path)
+        # Set the logging level from config
+        keyboard.add_hotkey(
+            config.config("toggle_keybinds_shortcut", "ctrl+shift+/"),
+            toggle_keybinds,
+            args=(),
+        )
+        input_smoothing_value = config.config("input_smoothing", 0.8)
+        try:
+            level_str = config.config("logging_level")
+            level = getattr(logging, str(level_str).upper(), logging.INFO)
+            # logging.getLogger().setLevel(level)
+            wa_logger.setLevel(level)
+            wa_logger.info(
+                f"Logging level set to {logging.getLevelName(level)} from config"
+            )
+        except Exception as e:
+            wa_logger.setLevel(logging.INFO)
+            wa_logger.warning(f"Failed to set logging level from config: {e}")
+        return config
+
     config = await init_config()
 
     apply_endpoint_handlers_from_config(config.config("endpoint_groups"))
-
-    print(config.config("bind_address"))
 
     # start the OSC server in the background on the same loop (but don't auto-start)
     try:
@@ -837,24 +894,19 @@ async def main(page: ft.Page):
     except Exception:
         wa_logger.exception("Failed to import osc_server module")
 
-    # keybinds enabled preference
-    try:
-        stored_keybinds = await ft.SharedPreferences().get("osc_keybinds_enabled")
-    except Exception:
-        stored_keybinds = None
+    walk_key_value = str(config.config("walk_key", "w"))
+    run_key_value = str(config.config("run_key", "shift"))
+    run_threshold_value = str(config.config("run_threshold", 500))
+    walk_threshold_value = str(config.config("walk_threshold", 150))
 
-    walk_key_value = str(config.config("walk_key"))
-    run_key_value = str(config.config("run_key"))
-    run_threshold_value = str(config.config("run_threshold"))
-    walk_threshold_value = str(config.config("walk_threshold"))
-
-    addr_value = str(config.config("bind_address"))
-    port_value = str(config.config("bind_port"))
+    addr_value = str(config.config("bind_address", ""))
+    port_value = str(config.config("bind_port", 9000))
     endpoint_value = str(
         config.config("endpoint_groups")[0]["endpoints"][0]["resource"]
     )
-    smoothing_value = str(config.config("input_smoothing"))
-    debug_mode = bool(config.config("debug"))
+    smoothing_value = str(config.config("input_smoothing", 0.8))
+    multiplier_value = str(config.config("multiplier", 1.0))
+    debug_mode = bool(config.config("debug", False))
 
     bind_addr_field = ft.TextField(
         label="Bind address (leave empty for auto)", value=addr_value, width=300
@@ -862,11 +914,20 @@ async def main(page: ft.Page):
     bind_port_field = ft.TextField(
         label="Bind port",
         value=port_value,
-        width=120,
+        width=145,
         input_filter=ft.NumbersOnlyInputFilter(),
     )
     bind_smoothing_field = ft.TextField(
-        label="Smoothing", value=str(smoothing_value), width=120
+        label="Smoothing",
+        value=str(smoothing_value),
+        width=145,
+        input_filter=ft.NumbersOnlyInputFilter(),
+    )
+    bind_multiplier_field = ft.TextField(
+        label="Multiplier",
+        value=str(multiplier_value),
+        width=145,
+        input_filter=ft.NumbersOnlyInputFilter(),
     )
 
     # Chart update interval is fixed (CHART_UPDATE_INTERVAL)
@@ -890,17 +951,53 @@ async def main(page: ft.Page):
             if bind_port_field.value is not None
             else "9000"
         )
-        # endpoint = (
-        #     bind_endpoint_field.value.strip()
-        #     if bind_endpoint_field.value is not None
-        #     else "/accelerometer"
-        # )
-        default_endpoint = config.config("endpoints")[0]["resource"]
         smoothing_str = (
             bind_smoothing_field.value.strip()
             if bind_smoothing_field.value is not None
             else "0.8"
         )
+        walk_threshold_str = (
+            walk_threshold_field.value.strip()
+            if walk_threshold_field.value is not None
+            else 150
+        )
+        run_threshold_str = (
+            run_threshold_field.value.strip()
+            if run_threshold_field.value is not None
+            else 500
+        )
+        walk_key_str = (
+            walk_key_field.value.strip() if walk_key_field.value is not None else "w"
+        )
+        run_key_str = (
+            run_key_field.value.strip() if run_key_field.value is not None else "shift"
+        )
+        try:
+            config.set("walk_key", walk_key_str)
+        except TypeError:
+            wa_logger.warning(
+                f"Invalid walk key '{walk_key_str}', keeping previous value"
+            )
+        try:
+            config.set("run_key", run_key_str)
+        except TypeError:
+            wa_logger.warning(
+                f"Invalid run key '{run_key_str}', keeping previous value"
+            )
+        try:
+            walk_threshold = float(walk_threshold_str)
+            config.set("walk_threshold", walk_threshold)
+        except TypeError:
+            wa_logger.warning(
+                f"Invalid walk threshold '{walk_threshold_str}', keeping previous value"
+            )
+        try:
+            run_threshold = float(run_threshold_str)
+            config.set("run_threshold", run_threshold)
+        except TypeError:
+            wa_logger.warning(
+                f"Invalid run threshold '{run_threshold_str}', keeping previous value"
+            )
         try:
             port = int(port_str)
         except TypeError:
@@ -910,16 +1007,28 @@ async def main(page: ft.Page):
         except TypeError:
             smoothing = 0.8
         try:
-            config.set(
-                ["bind_address", "bind_port", "input_smoothing"],
-                [addr, port_str, smoothing_str],
+            multiplier = (
+                float(bind_multiplier_field.value.strip())
+                if bind_multiplier_field.value is not None
+                else 1.0
             )
-            config.set("bind_port", port)
+        except TypeError:
+            multiplier = 1.0
+        try:
+            config.set(
+                ["bind_address", "bind_port"],
+                [addr, port_str],
+            )
             config.set("input_smoothing", smoothing)
+            config.set("multiplier", multiplier)
+            config.set("auto_start_osc", True)
             # await ft.SharedPreferences().set(
             #     "osc_endpoint", endpoint
             # )  # TODO: Replace with multiple endpoints
             wa_logger.info(f"Bind settings saved")
+            import osc_server
+
+            apply_saved_server_config(osc_server, addr, port, smoothing, multiplier)
             if osc_current_ip_control.value != f"{addr}:{port_str}":
                 osc_current_ip_control.italic = True
                 osc_restart_icon_button.visible = True
@@ -940,9 +1049,7 @@ async def main(page: ft.Page):
         try:
             import osc_server
 
-            osc_server.set_bind_address(
-                addr if addr != "" else None, port, default_endpoint
-            )
+            osc_server.set_bind_address(addr if addr != "" else None, port)
         except Exception:
             wa_logger.exception("Failed to apply bind settings to osc_server")
 
@@ -973,22 +1080,9 @@ async def main(page: ft.Page):
     run_threshold_field = ft.TextField(label="Run Threshold", value=run_threshold_value)
     run_key_field = ft.TextField(label="Run Key", value=run_key_value)
 
-    # Keybinds enabled toggle (persisted)
-    keybinds_enabled = True if (stored_keybinds in (None, "True", True)) else False
-
     def on_keybinds_toggle(e):
-        nonlocal keybinds_enabled
+        global keybinds_enabled
         keybinds_enabled = bool(e.control.value)
-
-        async def _save():
-            try:
-                await ft.SharedPreferences().set(
-                    "osc_keybinds_enabled", str(keybinds_enabled)
-                )
-            except Exception:
-                wa_logger.exception("Failed to persist keybinds_enabled preference")
-
-        asyncio.create_task(_save())
 
     keybinds_checkbox = ft.Checkbox(label="Enable keybinds", value=keybinds_enabled)
     keybinds_checkbox.on_change = on_keybinds_toggle
@@ -997,7 +1091,7 @@ async def main(page: ft.Page):
         label="Start OSC on launch", value=auto_start_value
     )
     auto_start_checkbox.on_change = on_auto_toggle
-    save_bind_button = ft.Button("Save bind", on_click=on_save_bind)
+    save_bind_button = ft.Button("Save Settings", on_click=on_save_bind)
 
     # Set up status, last-message controls, and log
     osc_current_ip_control = ft.Text(
@@ -1129,13 +1223,18 @@ async def main(page: ft.Page):
         # also apply stored bind settings immediately
         try:
             if addr_value not in (None, ""):
-                osc_server.set_bind_address(addr_value, int(port_value), endpoint_value)
+                osc_server.set_bind_address(addr_value, int(port_value))
         except Exception:
             pass
         try:
             osc_server.set_smoothing(float(smoothing_value))
         except Exception:
             wa_logger.exception("Failed to set smoothing factor")
+
+        try:
+            osc_server.set_bind_multiplier(float(config.config("multiplier", 1.0)))
+        except Exception:
+            wa_logger.exception("Failed to set bind multiplier")
         # start automatically if preference set
 
         osc_server.set_debug_mode(debug_mode)
@@ -1173,8 +1272,7 @@ async def main(page: ft.Page):
         try:
 
             async def chart_updater():
-                global latest_smoothed, last_msg_time
-                nonlocal walk_is_down, run_is_down, keybinds_enabled
+                global latest_smoothed, last_msg_time, keybinds_enabled, run_is_down, walk_is_down
                 interval = CHART_UPDATE_INTERVAL
                 last_push_time = 0.0
                 last_tick = time.monotonic()
@@ -1200,12 +1298,12 @@ async def main(page: ft.Page):
                                     latest_smoothed *= decay_factor
                                     last_decay_time += DECAY_TICK
                                 # clamp tiny values to zero
-                                if abs(latest_smoothed) < 0.1:
+                                if abs(latest_smoothed) < 0.01:
                                     latest_smoothed = 0.0
                                 if last_decay_time > now_tick:
                                     last_decay_time = now_tick
                         val = latest_smoothed
-                        # update readout immediately so UI shows decayed value
+                        # update readout immediately so the UI shows the decayed value
                         if value_readout_text_control is not None:
                             try:
                                 value_readout_text_control.value = f"{round(val)}"
@@ -1247,6 +1345,7 @@ async def main(page: ft.Page):
                                                 _keyboard.press(k)
                                                 wa_logger.debug(f"Pressing {k}")
                                             walk_is_down = True
+                                            p.update()
                                         except Exception:
                                             wa_logger.exception(
                                                 "Failed to press walk key(s)"
@@ -1258,12 +1357,13 @@ async def main(page: ft.Page):
                                             walk_below_since = time.monotonic()
                                         elif (
                                             time.monotonic() - walk_below_since
-                                        ) >= 0.2:
+                                        ) >= input_smoothing_value:
                                             try:
                                                 for k in reversed(keys):
                                                     wa_logger.debug(f"Releasing {k}")
                                                     _keyboard.release(k)
                                                 walk_is_down = False
+                                                p.update()
                                             except Exception:
                                                 wa_logger.exception(
                                                     "Failed to release walk key(s)"
@@ -1336,6 +1436,20 @@ async def main(page: ft.Page):
                                         )
                                     finally:
                                         run_is_down = False
+                            osc_is_running.icon = (
+                                ft.Icons.SELF_IMPROVEMENT
+                                if not keybinds_enabled
+                                else (
+                                    ft.Icons.DIRECTIONS_RUN
+                                    if run_is_down
+                                    else (
+                                        ft.Icons.DIRECTIONS_WALK
+                                        if walk_is_down
+                                        else ft.Icons.MAN
+                                    )
+                                )
+                            )
+                            osc_is_running.update()
                         except Exception:
                             wa_logger.exception("Error handling run key press/release")
 
@@ -1536,13 +1650,23 @@ async def main(page: ft.Page):
                 controls=[
                     bind_addr_field,
                     bind_port_field,
-                    save_bind_button,
                 ]
             ),
             ft.Row(
-                controls=[bind_smoothing_field, auto_start_checkbox, osc_debug_mode]
+                controls=[
+                    bind_smoothing_field,
+                    bind_multiplier_field,
+                    auto_start_checkbox,
+                    osc_debug_mode,
+                ]
+            ),
+            ft.Row(
+                controls=[
+                    save_bind_button,
+                ]
             ),
             endpoints_ui,
+            tile_e,
             ft.Row(
                 controls=[
                     osc_toggle_button,
@@ -1550,11 +1674,15 @@ async def main(page: ft.Page):
                     osc_status_control,
                 ]
             ),
-            tile_e,
             # ft.ExpansionTile(
             #     title=ft.Text("Recent OSC messages:"), controls=[osc_log_list]
             # ),
         ]
+    )
+
+    osc_is_running = ft.Icon(
+        ft.Icons.SELF_IMPROVEMENT,
+        color=ft.Colors.with_opacity(0.2, ft.Colors.WHITE),
     )
 
     """
@@ -1576,7 +1704,8 @@ async def main(page: ft.Page):
     """
 	Theme Settings
 	"""
-    page.fonts = {"Geist": "fonts/Geist-VariableFont_wght.ttf"}
+    font_path = resource_path("assets/fonts/Geist-VariableFont_wght.ttf")
+    page.fonts = {"Geist": font_path}
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.BLUE, font_family="Geist")
 
     """
@@ -1629,6 +1758,8 @@ async def main(page: ft.Page):
                     ]
                 ),
                 keybinds_checkbox,
+                ft.Container(expand=True),
+                osc_is_running,
             ],
             tight=True,
         ),

@@ -6,7 +6,7 @@ from value_types import WalkAssistantValueTypes
 
 
 class WalkAssistantConfig:
-    __config = {
+    __default_config = {
         "auto_start_osc": True,
         "bind_address": "",
         "bind_port": 9000,
@@ -15,8 +15,10 @@ class WalkAssistantConfig:
         "run_threshold": 400,
         "walk_key": "w",
         "run_key": "shift",
+        "multiplier": 1.0,
         "logging_level": "info",
         "debug": False,
+        "toggle_keybinds_shortcut": "ctrl+shift+/",
         "endpoint_groups": [
             {
                 "id": 0,
@@ -55,6 +57,7 @@ class WalkAssistantConfig:
             },
         ],
     }
+    __config = __default_config
     __config_path = ""
     __config_logger = logging.getLogger("WA_Config")
     __config_logger.setLevel(logging.DEBUG)
@@ -84,35 +87,60 @@ class WalkAssistantConfig:
                     "Config file is invalid, using default config"
                 )
 
-    def config(self, name):
+    def config(self, name, default=None):
         self.__config_logger.debug(f"Retrieving config value for '{name}'")
+        if name not in self.__config.keys():
+            self.__config_logger.error(f"Key '{name}' not found in config")
+            if default is not None:
+                self.__config_logger.debug(
+                    f"Returning default value for '{name}': {default}"
+                )
+                return default
+            if name not in self.__default_config.keys():
+                self.__config_logger.error(f"Key '{name}' not found in config")
+            return self.__default_config[name]
         return self.__config[name]
 
     def set(self, name: str | list[str], value):
         names = name if isinstance(name, list) else [name]
         values = value if isinstance(value, list) else [value]
-        if len(names) != len(values):
-            self.__config_logger.error(
-                f"Number of names ({len(names)}) does not match number of values ({len(values)})"
-            )
-            raise ValueError(
-                f"Number of names ({len(names)}) does not match number of values ({len(values)})"
-            )
-        for i, n in enumerate(names):
-            if n in self.__config.keys():
-                self.__config_logger.debug(
-                    f"Setting config value for '{n}' to '{values[i]}'"
+        try:
+            if len(names) != len(values):
+                self.__config_logger.error(
+                    f"Number of names ({len(names)}) does not match number of values ({len(values)})"
                 )
-                self.__config[n] = values[i]
-            else:
-                self.__config_logger.error(f"Key '{n}' not found in config")
-                raise KeyError(f"Key {n} not found in config")
-        if self.__config_path:
-            yaml.safe_dump(
-                self.__config,
-                open(self.__config_path, "w"),
-                sort_keys=False,
-            )
+                raise ValueError(
+                    f"Number of names ({len(names)}) does not match number of values ({len(values)})"
+                )
+            for i, n in enumerate(names):
+                if (
+                    n not in self.__config.keys()
+                    and n not in self.__default_config.keys()
+                ):
+                    self.__config_logger.error(f"Key '{n}' not found in config")
+                    return False
+                if n not in self.__config.keys() and n in self.__default_config.keys():
+                    self.__config_logger.debug(
+                        f"Key '{n}' not found in current config, but key exists in default config. Adding key '{n}' to current config with default value '{self.__default_config[n]}'"
+                    )
+                    self.__config[n] = values[i]
+                if n in self.__config.keys():
+                    self.__config_logger.debug(
+                        f"Setting config value for '{n}' to '{values[i]}'"
+                    )
+                    self.__config[n] = values[i]
+                else:
+                    self.__config_logger.error(f"Key '{n}' not found in config")
+                    return False
+            if self.__config_path:
+                yaml.safe_dump(
+                    self.__config,
+                    open(self.__config_path, "w"),
+                    sort_keys=False,
+                )
+        except KeyError:
+            self.__config_logger.error(f"Key '{name}' not found in config")
+            return False
         return True
 
     def set_array(self, name: str, value: list):
