@@ -380,6 +380,31 @@ class WalkAssistantEndpoints:
         self.__endpoints_container.controls = self.__endpoint_controls
         p.update()
 
+    async def restart_osc(self):
+        """Stop the background OSC server and update the UI."""
+        global osc_task, chart_update_task
+        try:
+            import osc_server
+
+            if osc_task is not None and not osc_task.done():
+                osc_task.cancel()
+                try:
+                    await osc_task
+                except asyncio.CancelledError:
+                    pass
+            osc_task = None
+            if osc_task is None or osc_task.done():
+                osc_task = asyncio.create_task(osc_server.start_async_osc_server())
+        except Exception:
+            self.__endpoints_logger.error("Failed to stop OSC server from UI")
+
+    def restart_server(self):
+        task = osc_task
+        if task is not None and isinstance(task, asyncio.Task) and not task.done():
+            asyncio.create_task(self.restart_osc())
+        else:
+            self.__endpoints_logger.error("Failed to restart OSC server")
+
     def save_endpoints(self, e: ft.Event):
         out_groups = []
         controls = [self.__endpoints_container.header]
@@ -422,6 +447,7 @@ class WalkAssistantEndpoints:
         except Exception:
             self.__endpoints_logger.exception("Failed to persist endpoint groups")
             return False
+        self.restart_server()
         apply_endpoint_handlers_from_config(out_groups)
         return saved
 
@@ -1248,7 +1274,7 @@ async def main(page: ft.Page):
             wa_logger.exception("Failed to auto-start OSC server")
 
         # Decay behaviour and chart updater configuration
-        DECAY_START = 0.8
+        DECAY_START = 0.5
         DECAY_RATE = 3
         DECAY_TICK = 0.025
 
